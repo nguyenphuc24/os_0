@@ -141,22 +141,148 @@ struct vm_rg_struct {
 
 ### 2.6 PTE — Page Table Entry (32-bit format)
 
+Mỗi virtual page được quản lý bởi một Page Table Entry (PTE) 32-bit, dùng để ánh xạ địa chỉ ảo sang frame vật lý trong RAM hoặc vị trí trong swap.
+
 ```
-┌─────────┬─────────┬─────────┬───────────┬─────────────────┐
-│ PRESENT │ SWAPPED │ DIRTY   │ USRNUM    │ FPN (bits 12-0) │
-│ bit 31  │ bit 30  │ bit 28  │ bits27-15 │ or SWAP info    │
-└─────────┴─────────┴─────────┴───────────┴─────────────────┘
+┌─────────┬─────────┬─────────┬───────────┬─────────────────────────────┐
+│ PRESENT │ SWAPPED │ DIRTY   │ USRNUM    │ FPN (bits 12-0) hoặc SWAP   │
+│ bit 31  │ bit 30  │ bit 28  │ bits27-15 │ info nếu đang ở swap        │
+└─────────┴─────────┴─────────┴───────────┴─────────────────────────────┘
 ```
+
+Chi tiết từng bit:
+
+| Bit(s) | Ý nghĩa |
+|:---|:---|
+| 0–12 | **Frame Page Number (FPN)** nếu page đang ở RAM |
+| 13–14 | Reserved (0) |
+| 15–27 | User-defined numbering |
+| 0–4 | Swap type nếu page đang ở SWAP |
+| 5–25 | Swap offset nếu page đang ở SWAP |
+| 28 | Dirty bit |
+| 29 | Reserved |
+| 30 | Swapped bit |
+| 31 | Present bit |
 
 | Trạng thái | PRESENT | SWAPPED | Ý nghĩa |
 |:---|:---|:---|:---|
 | Page ở RAM | 1 | 0 | FPN chứa frame number vật lý |
-| Page đã swap | 1 | 1 | Chứa swap type + swap offset |
-| Chưa map | 0 | x | Chưa có ánh xạ nào |
+| Page đã swap | 0 | 1 | Chứa swap type + swap offset |
+| Chưa map | 0 | 0 | Chưa có ánh xạ nào |
+
+> **Lưu ý**: Khi page bị đẩy ra swap (`pte_set_swap`), bit PRESENT bị **clear** (= 0), không phải set. Đây là điểm dễ nhầm — `PAGING_PAGE_PRESENT(pte) == 0` mới là điều kiện kích hoạt swap-in.
+
+### 2.7 memphy_struct & framephy_struct — Bộ Nhớ Vật Lý
+
+Mỗi thiết bị bộ nhớ vật lý (RAM hoặc Swap) được đại diện bằng `memphy_struct`. Các frame bên trong được quản lý qua linked list `framephy_struct`.
+
+```c
+struct framephy_struct {
+    addr_t fpn;                        // Frame page number
+    struct framephy_struct *fp_next;   // Frame kế tiếp trong list
+
+    /* Tracking frame được cấp phát */
+    struct mm_struct *owner;           // Process đang sở hữu frame này
+};
+
+struct memphy_struct {
+    BYTE *storage;                     // Vùng lưu trữ dữ liệu thực tế
+    int maxsz;                         // Kích thước tối đa (bytes)
+
+    int rdmflg;                        // 1 = random access (RAM), 0 = sequential (Swap)
+    int cursor;                        // Con trỏ hiện tại (dùng cho sequential device)
+
+    struct framephy_struct *free_fp_list;  // Danh sách frame trống
+    struct framephy_struct *used_fp_list;  // Danh sách frame đang dùng
+};
+```
+
+**Ví dụ — RAM 2^14 bytes (4 frame)**:
+
+```
+       RAM
++-------------------+
+| Frame 0           |  0 → 4095
++-------------------+
+| Frame 1           |  4096 → 8191
++-------------------+
+| Frame 2           |  8192 → 12287
++-------------------+
+| Frame 3           |  12288 → 16383
++-------------------+
+
+free_fp_list: Frame 0 → Frame 1 → Frame 2 → Frame 3 → NULL
+used_fp_list: NULL
+rdmflg: 1 (RAM — random access)
+```
+
+`rdmflg = 1` phân biệt RAM (truy cập ngẫu nhiên) với Swap (truy cập tuần tự theo cursor).
 
 ---
 
 ## 3. Các Module Chi Tiết
+
+### 3.0 Bộ Nhớ User Space và Kernel Space
+
+#### Khái niệm
+
+- **User space**: Vùng bộ nhớ dành cho các chương trình người dùng (process). Process chỉ được truy cập vùng nhớ của chính nó — không thể truy cập trực tiếp phần cứng hay bộ nhớ kernel.
+- **Kernel space**: Vùng bộ nhớ dành cho hệ điều hành. Chứa kernel code, page table, driver, kernel heap/cache và có quyền truy cập toàn bộ RAM, thiết bị phần cứng.
+
+Khi user program cần thao tác đặc quyền (I/O, cấp phát trang, swap, đọc/ghi RAM…), nó gọi **system call** để chuyển từ user space sang kernel space.
+
+#### Sơ đồ phân chia Virtual Memory Space (64-bit)
+
+```
+                    VIRTUAL MEMORY SPACE (64-bit)
+
+0xFFFFFFFFFFFFFFFF  ┌──────────────────────────────────────┐
+                    │             Kernel Space             │
+                    │                                      │
+                    │  KMALLOC                             │
+                    │  KMEM_CACHE_CREATE                   │
+                    │  KMEM_CACHE_ALLOC                    │
+                    │  COPY_FROM_USER                      │
+                    │  COPY_TO_USER                        │
+                    │                                      │
+                    │  kernel code / heap / cache          │
+                    │  krnl_pgd / driver / kmem            │
+                    │                                      │
+0xFFFF800000000000  ├──────────── KERNEL_BASE ─────────────┤
+                    │                                      │
+                    │              User Space              │
+                    │                                      │
+                    │  ALLOC / FREE / READ / WRITE         │
+                    │  CALC / SYSCALL                      │
+                    │                                      │
+                    │  stack / heap / mmap / code          │
+                    │  mỗi process có pgd riêng            │
+                    │                                      │
+0x0000000000000000  └──────────────────────────────────────┘
+```
+
+`KERNEL_BASE = 0xffff800000000000ULL`
+
+#### alloc vs kmalloc
+
+| | `alloc` / `malloc` (user) | `kmalloc` (kernel) |
+|:---|:---|:---|
+| Vùng nhớ | User space | Kernel space |
+| Page table | `mm->pgd` riêng của process | `krnl->krnl_pgd` shared |
+| Quản lý | `vm_freerg_list`, `symrgtbl` | `symrgtbl` với `mode_bit=0`, `kcpooltbl` |
+| Ai dùng | Chương trình người dùng | Kernel (cache, driver, system data) |
+
+**Ví dụ**:
+
+```bash
+# USER MEMORY
+alloc 100 1          # Cấp phát 100 bytes, lưu vào symrgtbl[1]
+write 65 1 0         # Ghi giá trị 65 ('A') vào offset 0 của vùng nhớ số 1
+
+# KERNEL MEMORY
+kmalloc 200 2        # Kernel cấp phát 200 bytes trong kernel space, lưu vào symrgtbl[2]
+copy_from_user 1 2 0 10  # Copy 10 bytes từ user region 1 sang kernel region 2 offset 0
+```
 
 ### 3.1 `queue.c` — Hàng Đợi Tiến Trình
 
@@ -245,7 +371,7 @@ graph TD
 
 **`int pte_set_swap(struct pcb_t *caller, addr_t pgn, int swptyp, addr_t swpoff)`**
 - **Mục đích**: Đánh dấu page `pgn` đã bị đẩy ra swap disk, vị trí lưu = `swpoff`
-- **Logic**: Gọi `pg_walk(mm, pgn, 1)`, set bit PRESENT + SWAPPED, ghi swap type và swap offset
+- **Logic**: Gọi `pg_walk(mm, pgn, 1)`, **clear** bit PRESENT (page không còn ở RAM), set bit SWAPPED, ghi swap type và swap offset
 - **Khi nào gọi**: Khi victim page bị đuổi khỏi RAM để nhường chỗ cho page khác
 
 **`uint32_t pte_get_entry(struct pcb_t *caller, addr_t pgn)`**
@@ -291,6 +417,21 @@ graph TD
 - **Mục đích**: In địa chỉ bảng trang ở mỗi cấp để kiểm tra memory isolation
 - **Format**: `PID : <pid>` + `PDG=<addr> P4g=<addr> PUD=<addr> PMD=<addr>`
 - **Lưu ý**: Do multi-CPU chạy song song, log từ nhiều CPU có thể xen kẽ. PID giúp phân biệt output của process nào
+
+#### `vm_map_kernel(caller, incpgnum, ret_rg)` — Map frame vào kernel space
+
+```c
+addr_t vm_map_kernel(struct pcb_t *caller, int incpgnum, struct vm_rg_struct *ret_rg)
+```
+
+- **Mục đích**: Cấp phát frame vật lý và map chúng vào **kernel virtual address space** (không phải user pgd)
+- **Logic**:
+  1. Gọi `alloc_pages_range()` để lấy frame từ RAM
+  2. Tính `rg_start = KERNEL_BASE + fpn * PAGING64_PAGESZ` (địa chỉ kernel virtual của frame)
+  3. Duyệt `krnl->krnl_pgd` (không phải `mm->pgd`) theo từng tầng PGD→P4D→PUD→PMD→PT
+  4. Set PTE trong kernel page table: PRESENT=1, SWAPPED=0, FPN = fpn
+- **Khi nào gọi**: Khi `__kmalloc` cần cấp phát vùng nhớ trong kernel space
+- **Lưu ý**: Giả định hiện tại `incpgnum = 1` (chỉ hỗ trợ 1 frame). `alloc_pages_range` không đảm bảo frame liên tục nên cần xử lý riêng nếu cần nhiều hơn.
 
 ### 3.4 `mm-vm.c` — Virtual Memory Management
 
@@ -379,7 +520,51 @@ sequenceDiagram
   - Nếu region lớn hơn → cắt phần cần, giữ phần dư lại trong free list
 - **Return -1**: Nếu không tìm được vùng trống → caller phải gọi `inc_vma_limit()` để mở rộng VMA
 
-### 3.6 `sys_mem.c` — System Call Handler
+**`int enlist_vm_freerg_list(struct mm_struct *mm, struct vm_rg_struct *rg_elmt)`**
+- **Mục đích**: Chèn một vùng nhớ vừa được `free` trở lại danh sách `vm_freerg_list`, giữ thứ tự theo địa chỉ và **gộp (coalesce) các vùng liền kề** nếu có
+- **Logic**:
+  1. Validate: `rg_elmt != NULL` và `rg_start < rg_end`
+  2. Duyệt list tìm vị trí chèn theo thứ tự tăng dần của `rg_start`
+  3. Chèn node mới vào giữa `prev` và `cur`
+  4. Kiểm tra gộp với vùng kế tiếp: nếu `rg_elmt->rg_end == cur->rg_start` → merge
+  5. Kiểm tra gộp với vùng phía trước: nếu `prev->rg_end == rg_elmt->rg_start` → merge
+- **Tại sao gộp**: Tránh phân mảnh bộ nhớ (fragmentation) — nhiều vùng nhỏ liền kề được hợp thành 1 vùng lớn để tái sử dụng
+
+**`addr_t __kmalloc(struct pcb_t *caller, int vmaid, int rgid, addr_t size, addr_t *alloc_addr)`**
+- **Mục đích**: Cấp phát bộ nhớ trong **kernel space** (tương tự `kmalloc` trong Linux kernel)
+- **Logic**:
+  1. Align `size` lên bội số page size: `req_size = PAGING64_PAGE_ALIGNSZ(size)`
+  2. Tính số page cần: `incpgnum = req_size / PAGING64_PAGESZ`
+  3. Gọi `vm_map_kernel()` → map frame vào kernel virtual space
+  4. Gán `alloc_addr = newrg.rg_start`, cập nhật `symrgtbl[rgid]` với `mode_bit = 0` (kernel mode)
+- **Khi nào gọi**: Khi process cần cấp phát bộ nhớ kernel (driver, cache, system data)
+
+**`int libkmem_cache_pool_create(struct pcb_t *caller, uint32_t size, uint32_t align, uint32_t cache_pool_id)`**
+- **Mục đích**: Tạo một **kernel memory cache pool** — vùng nhớ kernel được pre-allocate để phân phối nhanh các object cùng kích thước (kiểu slab allocator đơn giản)
+- **Logic**: Tương tự `__kmalloc` nhưng cập nhật `krnl->mm->kcpooltbl[cache_pool_id]` thay vì `symrgtbl`
+- **Khi nào dùng**: Khi kernel cần liên tục cấp phát/giải phóng nhiều object cùng kích thước (VD: PCB, page descriptor...)
+
+**`addr_t __kmem_cache_alloc(struct pcb_t *caller, int vmaid, int rgid, int cache_pool_id, addr_t *alloc_addr)`**
+- **Mục đích**: Lấy một slot từ cache pool đã tạo sẵn bằng `libkmem_cache_pool_create`
+- **Logic**: Tra `krnl->mm->kcpooltbl[cache_pool_id]` → lấy `pool->storage` làm địa chỉ → cập nhật `symrgtbl[rgid]`
+- **Ưu điểm**: Nhanh hơn `__kmalloc` vì không cần cấp phát frame mới, chỉ lấy từ pool có sẵn
+
+**`int __read_user_mem / __write_user_mem(caller, vmaid, rgid, offset, data/value)`**
+- **Mục đích**: Đọc/ghi 1 byte từ **user memory region** (qua page table của process)
+- **Logic**: Tra `symrgtbl[rgid]`, tính địa chỉ ảo = `rg_start + offset`, gọi `pg_getval` / `pg_setval`
+
+**`int __read_kernel_mem / __write_kernel_mem(caller, vmaid, rgid, offset, data/value)`**
+- **Mục đích**: Đọc/ghi 1 byte từ **kernel memory region** (qua kernel page table)
+- **Logic** (khác với user mem):
+  1. Tra `symrgtbl[rgid]` lấy `rg_start`
+  2. Tính `kva = rg_start + offset` (kernel virtual address)
+  3. Tách `kva` → `pgn` + `off`
+  4. Duyệt `krnl->krnl_pgd` (không phải `mm->pgd`) để tìm FPN
+  5. Tính `phyaddr = fpn * PAGING64_PAGESZ + off`
+  6. `MEMPHY_read/write(mram, phyaddr, data/value)`
+- **Điểm khác biệt then chốt**: Dùng `krnl_pgd` thay vì `mm->pgd` — đây là kernel page table, không qua cơ chế swap của user
+
+ — System Call Handler
 
 #### `__sys_memmap(krnl, pid, regs)`
 
@@ -450,19 +635,32 @@ load(path) → malloc(krnl_t) + *krnl = os → init_mm(krnl->mm)
 ### Memory Operation Flow
 
 ```
-ALLOC → liballoc → __alloc → get_free_vmrg_area
-                           → [miss] → syscall 17 → inc_vma_limit
-                                                  → vm_map_ram
-                                                  → alloc_pages_range + vmap_page_range
+# User Space Operations
+ALLOC  → liballoc → __alloc → get_free_vmrg_area
+                            → [miss] → syscall 17 → inc_vma_limit
+                                                   → vm_map_ram
+                                                   → alloc_pages_range + vmap_page_range
 
-READ  → libread → __read → pg_getval → pg_getpage → [swap-in nếu cần]
-                                      → MEMPHY_read
+READ   → libread  → __read_user_mem  → pg_getval → pg_getpage → [swap-in nếu cần]
+                                                  → MEMPHY_read
 
-WRITE → libwrite → __write → pg_setval → pg_getpage → [swap-in nếu cần]
-                                        → MEMPHY_write
+WRITE  → libwrite → __write_user_mem → pg_setval → pg_getpage → [swap-in nếu cần]
+                                                  → MEMPHY_write
 
-FREE  → libfree → __free → enlist_vm_freerg_list
+FREE   → libfree  → __free → enlist_vm_freerg_list (gộp vùng liền kề)
+
+# Kernel Space Operations
+KMALLOC         → __kmalloc → vm_map_kernel → alloc_pages_range
+                                            → map vào krnl_pgd
+
+KMEM_CACHE_CREATE → libkmem_cache_pool_create → vm_map_kernel → kcpooltbl
+
+KMEM_CACHE_ALLOC  → __kmem_cache_alloc → kcpooltbl[pool_id].storage → symrgtbl
+
+READ kernel   → __read_kernel_mem  → krnl_pgd (không qua swap) → MEMPHY_read
+WRITE kernel  → __write_kernel_mem → krnl_pgd (không qua swap) → MEMPHY_write
 ```
+
 
 ---
 
@@ -512,15 +710,15 @@ for (i = 0; i < krnl->running_list->size; i++) {
 }
 ```
 
-### 5.3 Tổng hợp các file đã thay đổi so với gốc
+### 5.3 Tổng hợp các file cần thay đổi so với gốc
 
 | File | Gốc | Hiện tại |
 |:---|:---|:---|
 | `os.c` | `proc->krnl = &os` (bug) | `malloc + *krnl = os` (mm riêng mỗi process) |
 | `sys_mem.c` | Tạo dummy `malloc(pcb_t)` | Duyệt `running_list` match PID |
-| `mm64.c` | Các hàm PTE dùng dummy `malloc` PTE, TODO trống | Implement `pg_walk()`, PTE functions dùng bảng trang thật, `init_mm`, `alloc_pages_range`, `vmap_page_range`, `print_pgtbl` |
+| `mm64.c` | Các hàm PTE dùng dummy `malloc` PTE, TODO trống | Implement `pg_walk()`, PTE functions dùng bảng trang thật, `init_mm`, `alloc_pages_range`, `vmap_page_range`, `vm_map_kernel`, `print_pgtbl` |
 | `mm-vm.c` | `inc_vma_limit` trống (return 0) | Implement đầy đủ: tính inc_amt, get_vm_area_node_at_brk, update sbrk, vm_map_ram |
-| `libmem.c` | `pg_getval/pg_setval` trống, `pg_getpage` swap chưa implement | Implement đọc/ghi qua page table, swap logic đầy đủ |
+| `libmem.c` | `pg_getval/pg_setval` trống, `pg_getpage` swap chưa implement | Implement đọc/ghi user mem qua page table, swap logic đầy đủ, `enlist_vm_freerg_list` có coalesce, kernel mem (`__kmalloc`, `__kmem_cache_alloc`, `__read/write_kernel_mem`, `libkmem_cache_pool_create`) |
 | `queue.c` | Trống | Implement `enqueue`, `dequeue`, `purgequeue` |
 | `sched.c` | `get_mlq_proc` trống | Implement với mutex + running_list tracking |
 | `mm-memphy.c` | `MEMPHY_dump` trống | Implement in memory content |
