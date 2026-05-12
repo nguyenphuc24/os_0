@@ -1,23 +1,18 @@
-# Tài Liệu Học Tập - OS Simulator (BTL OS Hướng Dẫn Triển Khai)
+# Tài Liệu Học Tập - OS Simulator (Caitoa Release)
 
-Tài liệu này giải thích chi tiết cấu trúc hệ thống mô phỏng Hệ Điều Hành (OS Simulator), đi sâu vào các cấu trúc dữ liệu cốt lõi, vai trò của từng file mã nguồn, và cách luồng thực thi diễn ra từ khi nạp một tiến trình cho đến khi kết thúc. Mục tiêu là giúp sinh viên với kiến thức OS nền tảng có thể hiểu, theo dõi và tự triển khai lại được toàn bộ các file chưa hoàn thiện (`TODO`).
+## 1. Tổng Quan
 
----
-
-## 1. Tổng Quan Kiến Trúc
-
-Bộ mô phỏng được cấu trúc thành các module (hệ thống con) tách biệt, mô phỏng cách một OS thực tế hoạt động:
+Đây là **bộ mô phỏng hệ điều hành** với các hệ thống con:
 
 | Hệ thống con | File chính | Mô tả |
 |:---|:---|:---|
-| **Lập lịch (Scheduling)** | `sched.c`, `queue.c` | Lập lịch tiến trình dựa trên thuật toán đa hàng đợi (MLQ - Multi-Level Queue). Quyết định tiến trình nào được nắm quyền điều khiển CPU. |
-| **Quản lý bộ nhớ (Memory Management)** | `mm64.c`, `mm-vm.c`, `libmem.c` | Đây là trung tâm của bộ mô phỏng: Cài đặt hệ thống bộ nhớ ảo, cơ chế phân trang 5 cấp (5-level paging) ở kiến trúc 64-bit, cấp phát động bộ nhớ (on-demand), và xử lý swap. |
-| **Bộ nhớ vật lý (Physical Memory)** | `mm-memphy.c` | Mô phỏng RAM vật lý và ổ đĩa Swap. Cung cấp API đọc/ghi và cấp phát/thu hồi khung trang (frame). |
-| **Syscall Interface** | `sys_mem.c`, `syscall.c` | Giao diện để ứng dụng (User Space) yêu cầu OS (Kernel Space) cấp phát bộ nhớ, đọc/ghi ảo. |
-| **Kernel / Loader** | `os.c`, `loader.c` | Nạp mã máy từ file text, tạo PCB cho tiến trình, khởi tạo Kernel và môi trường thực thi. |
-| **CPU Execution** | `cpu.c` | Mô phỏng các CPU chạy đa luồng (`pthread`), đọc và thực thi từng lệnh ảo. |
+| **Scheduling** | `sched.c`, `queue.c` | Lập lịch đa hàng đợi (MLQ) |
+| **Memory Management** | `mm64.c`, `mm-vm.c`, `libmem.c` | Phân trang 5 cấp, cấp phát động (64-bit) |
+| **Physical Memory** | `mm-memphy.c` | Quản lý frame RAM và swap devices |
+| **Syscall Interface** | `sys_mem.c`, `syscall.c` | Giao tiếp user space ↔ kernel space |
+| **Kernel / Loader** | `os.c`, `loader.c` | Khởi tạo hệ thống, nạp process |
+| **CPU Execution** | `cpu.c` | Thực thi instruction trên mỗi CPU thread |
 
-### Sơ đồ tương tác:
 ```mermaid
 graph TD
     A["os.c — Kernel chính"] --> B["cpu.c — CPU Execution"]
@@ -37,128 +32,495 @@ graph TD
 
 ## 2. Cấu Trúc Dữ Liệu Cốt Lõi
 
-Để hiểu HĐH, ta phải hiểu cách nó tổ chức dữ liệu.
+### 2.1 pcb_t — Process Control Block
 
-### 2.1 Khối Điều Khiển Tiến Trình: `pcb_t` (Process Control Block)
-Đại diện cho một chương trình đang chạy. HĐH quản lý các tiến trình qua danh sách các PCB.
 ```c
 struct pcb_t {
-    uint32_t pid;                     // Process ID duy nhất
-    uint32_t priority;                // Mức ưu tiên gốc (từ file)
-    uint32_t prio;                    // Mức ưu tiên hiện tại (dùng cho MLQ)
-    char path[100];                   // Tên/đường dẫn của process
-    struct code_seg_t *code;          // Danh sách các dòng lệnh ảo (instructions)
-    addr_t regs[10];                  // Tập các thanh ghi (register) mô phỏng
-    uint32_t pc;                      // Program Counter: Chỉ số lệnh đang thực thi
-    struct krnl_t *krnl;              // Con trỏ tới môi trường Kernel mà process nhìn thấy
+    uint32_t pid;                     // Process ID
+    uint32_t priority;                // Priority mặc định (cố định)
+    uint32_t prio;                    // Priority on-fly (MLQ, có thể thay đổi)
+    char path[100];                   // Đường dẫn file process
+    struct code_seg_t *code;          // Code segment (danh sách instructions)
+    addr_t regs[10];                  // Registers (lưu địa chỉ vùng nhớ đã alloc)
+    uint32_t pc;                      // Program counter
+    struct krnl_t *krnl;              // Con trỏ đến bản copy kernel
+    struct page_table_t *page_table;  // Page table (legacy, 32-bit)
+    uint32_t bp;                      // Break pointer
 };
 ```
-Mỗi process sẽ có một con trỏ `krnl` trỏ tới môi trường hệ thống. Nhờ cấu trúc này, ta đảm bảo OS có thể cách ly không gian của từng process.
 
-### 2.2 Trạng Thái Kernel: `krnl_t`
-Cấu trúc đại diện cho hệ điều hành. Tuy nhiên, để đảm bảo cách ly vùng nhớ ảo của tiến trình, **mỗi tiến trình sẽ có một bản copy (shallow copy)** của struct này.
+Mỗi process sở hữu một bản **copy** riêng của `krnl_t` (xem mục 2.3).
+
+### 2.2 mm_struct — Quản Lý Bộ Nhớ Ảo (Per-Process)
+
+```c
+struct mm_struct {
+    // Bảng trang 5 cấp
+    addr_t *pgd;    // Page Global Directory (root, luôn allocated)
+    addr_t *p4d;    // Page 4-level Directory (allocated on demand)
+    addr_t *pud;    // Page Upper Directory
+    addr_t *pmd;    // Page Middle Directory
+    addr_t *pt;     // Page Table (cấp cuối, chứa PTE)
+    
+    // Quản lý vùng nhớ ảo
+    struct vm_area_struct *mmap;              // Linked list các VMA
+    struct vm_rg_struct symrgtbl[30];         // Bảng ký hiệu (symbol table)
+    struct pgn_t *fifo_pgn;                   // FIFO queue cho page replacement
+    struct kcache_pool_struct *kcpooltbl;     // Kernel cache pool
+};
+```
+
+Đây là thành phần **riêng biệt cho từng process**, mỗi process có page table và VMA riêng. Nằm bên trong `krnl_t`, truy cập qua `caller->krnl->mm`.
+
+### 2.3 krnl_t — Kernel State
+
 ```c
 struct krnl_t {
-    // Shared: Mọi process đều trỏ đến cùng các hàng đợi này
+    // Scheduler (shared — tất cả bản copy trỏ đến cùng queue)
     struct queue_t *ready_queue;
     struct queue_t *running_list;
     struct queue_t *mlq_ready_queue;
 
-    // Phân quyền bộ nhớ:
-    struct mm_struct *mm;               // <- BỘ NHỚ ẢO RIÊNG (Per-process): Mỗi process có 1 cái
-    
-    // Shared: Mọi process đều dùng chung phần cứng
-    struct memphy_struct *mram;         // Trỏ đến bộ nhớ RAM vật lý chung
-    struct memphy_struct **mswp;        // Các ổ đĩa swap chung
-    struct memphy_struct *active_mswp;  // Ổ đĩa swap đang dùng
-    
-    // Shared: Bảng trang chung của phần Kernel (kmem)
+    // Memory Management
+    struct mm_struct *mm;               // ← PER-PROCESS (malloc riêng)
+    struct memphy_struct *mram;         // Physical RAM (shared via pointer)
+    struct memphy_struct **mswp;        // Swap devices (shared via pointer)
+    struct memphy_struct *active_mswp;  // Active swap device
+    uint32_t active_mswp_id;
+
+    // Kernel page tables (shared via pointer)
     addr_t *krnl_pgd, *krnl_p4d, *krnl_pud, *krnl_pmd, *krnl_pt;
 };
 ```
 
-### 2.3 Bộ Nhớ Ảo Của Tiến Trình: `mm_struct`
-Cấu trúc duy trì toàn bộ thông tin bộ nhớ ảo (Virtual Memory) của một tiến trình.
+**Cơ chế isolation**: Mỗi process nhận bản **shallow copy** của `krnl_t` global qua `*krnl = os`. Các field con trỏ (mram, mswp, queues, krnl_pgd) tự động **shared** vì chỉ copy giá trị pointer. Riêng `krnl->mm` được `malloc` mới → mỗi process có page table riêng.
+
+```
+┌──────────────────────────────────────────────┐
+│         Global  static krnl_t os             │
+│  mram ──────► [Physical RAM]                 │
+│  mswp ──────► [Swap Devices]                 │
+│  krnl_pgd ──► [Kernel Page Tables]           │
+│  ready_queue ► [MLQ Queues]                  │
+│  mm = NULL   (không dùng trực tiếp)          │
+└──────────────────────────────────────────────┘
+        │ *krnl = os (shallow copy)
+        ▼
+┌─── Process 1 krnl_t ────┐  ┌─── Process 2 krnl_t ────┐
+│ mram ──► [same RAM]      │  │ mram ──► [same RAM]      │
+│ mswp ──► [same Swap]     │  │ mswp ──► [same Swap]     │
+│ mm ─────► [mm_struct #1] │  │ mm ─────► [mm_struct #2] │
+│           (pgd riêng)    │  │           (pgd riêng)    │
+└──────────────────────────┘  └──────────────────────────┘
+```
+
+### 2.4 vm_area_struct — Vùng Nhớ Ảo (VMA)
+
 ```c
-struct mm_struct {
-    // 5 con trỏ trỏ tới 5 tầng của Page Table
-    addr_t *pgd;    // Page Global Directory (Tầng gốc - Root)
-    addr_t *p4d;    // Page 4-level Directory
-    addr_t *pud;    // Page Upper Directory
-    addr_t *pmd;    // Page Middle Directory
-    addr_t *pt;     // Page Table (Chứa PTE)
-    
-    struct vm_area_struct *mmap;              // Danh sách các vùng nhớ ảo (VMA)
-    struct vm_rg_struct symrgtbl[30];         // Bảng Symbol (đánh dấu các vùng nhớ alloc)
-    struct pgn_t *fifo_pgn;                   // Danh sách page dùng để FIFO thay trang
+struct vm_area_struct {
+    unsigned long vm_id;               // VMA ID (0 = user space)
+    addr_t vm_start, vm_end;           // Phạm vi địa chỉ ảo [start, end)
+    addr_t sbrk;                       // Break pointer (điểm cấp phát tiếp theo)
+    struct mm_struct *vm_mm;           // Trỏ ngược về mm sở hữu
+    struct vm_rg_struct *vm_freerg_list; // Danh sách vùng trống
+    struct vm_area_struct *vm_next;    // VMA tiếp theo
 };
 ```
 
-### 2.4 Cấu Trúc Bảng Trang (PTE - Page Table Entry)
-Mỗi mục trong bảng trang (PTE) là 1 số nguyên 32 bit lưu các thông tin quan trọng.
+### 2.5 vm_rg_struct — Region trong VMA
+
+```c
+struct vm_rg_struct {
+    int vmaid;                     // VMA chứa region này
+    addr_t rg_start, rg_end;      // Phạm vi [start, end)
+    struct vm_rg_struct *rg_next;  // Region tiếp theo
+};
 ```
-Bit 31: PRESENT (1 = nằm trên RAM, 0 = không có)
-Bit 30: SWAPPED (1 = nằm dưới Disk Swap)
-Bit 0-12: Frame Physical Number (FPN) hoặc Offset của Disk Swap
+
+> **Ghi chú thiết kế**: Trong tài liệu của thầy, struct này có thêm `unsigned long mode_bit` để phân biệt usermode (mode_bit=1) và kernelmode (mode_bit=0). Code hiện tại chưa implement field này, nhưng ý đồ là mm_struct có thể quản lý cả vùng nhớ user và kernel, phân biệt qua mode_bit.
+
+### 2.6 PTE — Page Table Entry (32-bit format)
+
+```
+┌─────────┬─────────┬─────────┬───────────┬─────────────────┐
+│ PRESENT │ SWAPPED │ DIRTY   │ USRNUM    │ FPN (bits 12-0) │
+│ bit 31  │ bit 30  │ bit 28  │ bits27-15 │ or SWAP info    │
+└─────────┴─────────┴─────────┴───────────┴─────────────────┘
+```
+
+| Trạng thái | PRESENT | SWAPPED | Ý nghĩa |
+|:---|:---|:---|:---|
+| Page ở RAM | 1 | 0 | FPN chứa frame number vật lý |
+| Page đã swap | 1 | 1 | Chứa swap type + swap offset |
+| Chưa map | 0 | x | Chưa có ánh xạ nào |
+
+---
+
+## 3. Các Module Chi Tiết
+
+### 3.1 `queue.c` — Hàng Đợi Tiến Trình
+
+Cung cấp cấu trúc FIFO cho scheduler. Hình dung queue như một hàng người xếp hàng: ai đến trước thì được phục vụ trước.
+
+**`void enqueue(struct queue_t *q, struct pcb_t *proc)`**
+- **Mục đích**: Thêm một process vào **cuối** hàng đợi
+- **Logic**: Kiểm tra queue chưa đầy (`size < MAX_QUEUE_SIZE`), rồi đặt process vào `q->proc[q->size]`, tăng `size` lên 1
+- **Tại sao thêm cuối**: Đây là FIFO — ai vào trước thì ra trước
+
+**`struct pcb_t *dequeue(struct queue_t *q)`**
+- **Mục đích**: Lấy process **đầu tiên** ra khỏi hàng đợi
+- **Logic**: Lấy `q->proc[0]`, rồi dịch (shift) tất cả phần tử còn lại lên 1 vị trí. Giảm `size` đi 1
+- **Tại sao lấy đầu**: FIFO — phần tử đầu là phần tử vào trước nhất
+
+**`struct pcb_t *purgequeue(struct queue_t *q, struct pcb_t *proc)`**
+- **Mục đích**: Xóa một process **cụ thể** khỏi hàng đợi (dùng khi process kết thúc hoặc cần xóa khỏi running_list)
+- **Logic**: Duyệt tìm process theo con trỏ, khi tìm thấy thì shift các phần tử phía sau lên, giảm `size`
+
+### 3.2 `sched.c` — Bộ Lập Lịch MLQ
+
+```c
+static struct queue_t mlq_ready_queue[MAX_PRIO]; // 140 hàng đợi theo priority
+```
+
+**`struct pcb_t *get_mlq_proc(void)`**
+- **Mục đích**: Lấy process có priority **cao nhất** (số nhỏ nhất) để giao cho CPU chạy
+- **Logic**:
+  1. `pthread_mutex_lock` — khóa mutex vì nhiều CPU thread cùng gọi hàm này. Nếu không lock, 2 CPU có thể lấy cùng 1 process
+  2. Duyệt từ priority 0 → MAX_PRIO, tìm hàng đợi không rỗng **đầu tiên** (priority 0 = cao nhất)
+  3. `dequeue()` process ra khỏi hàng đợi đó
+  4. `pthread_mutex_unlock` — mở khóa
+  5. Thêm process vào `running_list` — để khi process gọi syscall, kernel tìm lại được nó
+
+**`void put_mlq_proc(struct pcb_t *proc)`**
+- **Mục đích**: Đưa process **trở lại** hàng đợi MLQ khi hết time slot
+- **Logic**: Enqueue vào `mlq_ready_queue[proc->prio]` — process quay lại đúng hàng đợi theo priority của nó
+
+**`void add_mlq_proc(struct pcb_t *proc)`**
+- **Mục đích**: Thêm process **mới** vào MLQ (gọi khi loader vừa load process xong)
+
+### 3.3 `mm64.c` — Bảng Trang 5 Cấp (Core)
+
+#### Kiến trúc địa chỉ ảo 57-bit
+
+```
+┌──────────┬──────────┬──────────┬──────────┬──────────┬────────────┐
+│ PGD(9bit)│ P4D(9bit)│ PUD(9bit)│ PMD(9bit)│ PT(9bit) │ Offset(12) │
+│ bit56-48 │ bit47-39 │ bit38-30 │ bit29-21 │ bit20-12 │ bit11-0    │
+└──────────┴──────────┴──────────┴──────────┴──────────┴────────────┘
+```
+
+Với `PAGING64_MAX_PGN = 512` (RAM 2MB, page 4KB), các index PGD/P4D/PUD/PMD luôn = 0, chỉ PT index thay đổi (0-511).
+
+#### `pg_walk(mm, pgn, alloc)` — Duyệt bảng trang
+
+```c
+static addr_t* pg_walk(struct mm_struct *mm, addr_t pgn, int alloc)
+```
+
+Cho page number → trả về **con trỏ đến PTE entry**.
+
+| Tham số `alloc` | Hành vi khi sub-table chưa tồn tại |
+|:---|:---|
+| `alloc = 1` | `calloc()` table mới → dùng khi **set** PTE |
+| `alloc = 0` | Return NULL → dùng khi **get** PTE |
+
+**Luồng xử lý**: Tách `pgn` thành 5 index → Đi từ PGD → P4D → PUD → PMD → PT. Ở mỗi tầng, nếu entry == 0 và `alloc=1` → cấp phát sub-table mới.
+
+```mermaid
+graph TD
+    A["mm->pgd - 512 entries"] -->|"pgd[idx] != 0"| B["P4D table - allocated on demand"]
+    B -->|"p4d[idx] != 0"| C["PUD table"]
+    C -->|"pud[idx] != 0"| D["PMD table"]
+    D -->|"pmd[idx] != 0"| E["PT table"]
+    E -->|"&pt[idx]"| F["PTE Entry"]
+    A -->|"pgd[idx] == 0, alloc=1"| G["calloc new P4D"]
+```
+
+#### Các hàm PTE (Page Table Entry)
+
+**`int pte_set_fpn(struct pcb_t *caller, addr_t pgn, addr_t fpn)`**
+- **Mục đích**: Đánh dấu page `pgn` đang nằm trong RAM, tại frame number `fpn`
+- **Logic**: Gọi `pg_walk(caller->krnl->mm, pgn, 1)` để lấy con trỏ PTE, rồi set bit PRESENT, clear bit SWAPPED, ghi FPN vào PTE
+- **Khi nào gọi**: Khi vừa cấp phát frame mới cho page, hoặc khi swap page từ disk về RAM
+
+**`int pte_set_swap(struct pcb_t *caller, addr_t pgn, int swptyp, addr_t swpoff)`**
+- **Mục đích**: Đánh dấu page `pgn` đã bị đẩy ra swap disk, vị trí lưu = `swpoff`
+- **Logic**: Gọi `pg_walk(mm, pgn, 1)`, set bit PRESENT + SWAPPED, ghi swap type và swap offset
+- **Khi nào gọi**: Khi victim page bị đuổi khỏi RAM để nhường chỗ cho page khác
+
+**`uint32_t pte_get_entry(struct pcb_t *caller, addr_t pgn)`**
+- **Mục đích**: Đọc giá trị PTE của page `pgn`
+- **Logic**: Gọi `pg_walk(mm, pgn, 0)` — truyền `alloc=0` nên nếu page chưa tồn tại trong bảng trang thì return 0 (không cấp phát mới)
+- **Khi nào gọi**: Khi cần kiểm tra page đang ở RAM hay swap, hoặc lấy FPN
+
+**`int pte_set_entry(struct pcb_t *caller, addr_t pgn, uint32_t pte_val)`**
+- **Mục đích**: Ghi trực tiếp một giá trị PTE bất kỳ (dùng cho trường hợp đặc biệt)
+
+#### `init_mm(mm, caller)` — Khởi tạo bộ nhớ cho process mới
+
+- **Mục đích**: Tạo không gian bộ nhớ ảo trống cho một process mới được load
+- **Logic**:
+  1. `calloc()` PGD root table (512 entries, tất cả = 0) — đây là bảng trang gốc
+  2. `p4d = pud = pmd = pt = NULL` — các sub-table sẽ được tạo khi cần (on demand)
+  3. Tạo VMA0 — vùng nhớ ảo mặc định cho user space, bắt đầu từ address 0, sbrk = 0
+  4. Gán `mm->mmap = vma0` — gắn VMA0 vào mm
+
+#### `alloc_pages_range(caller, req_pgnum, frm_lst)` — Xin frame vật lý
+
+- **Mục đích**: Yêu cầu `req_pgnum` frame vật lý từ RAM
+- **Logic**: Gọi `MEMPHY_get_freefp()` lặp lại nhiều lần, mỗi lần lấy 1 frame trống. Các frame được nối thành linked list qua `frm_lst`
+- **Trả -3000**: Nếu RAM hết frame trống → out of memory
+- **Ví dụ**: Process cần 3 page → hàm này xin 3 frame từ RAM, trả về list [frame5 → frame8 → frame12]
+
+#### `vmap_page_range(caller, addr, pgnum, frames, ret_rg)` — Map page vào page table
+
+- **Mục đích**: Gắn các frame vật lý (từ `alloc_pages_range`) vào bảng trang của process
+- **Logic**: Với mỗi page trong dãy:
+  1. Lấy frame tiếp theo từ `frames` list
+  2. `pte_set_fpn(caller, pgn, fpn)` — ghi vào PTE: "page này nằm ở frame này"
+  3. `enlist_pgn_node(&mm->fifo_pgn, pgn)` — thêm vào danh sách FIFO để theo dõi thứ tự sử dụng (dùng cho page replacement sau này)
+
+#### `vm_map_ram(caller, astart, aend, mapstart, incpgnum, ret_rg)` — Tổng hợp
+
+- **Mục đích**: Kết hợp 2 bước trên: xin frame + map vào page table
+- **Logic**: Gọi `alloc_pages_range()` xin frame → `vmap_page_range()` map vào bảng trang
+- **Khi nào gọi**: Khi `inc_vma_limit()` cần mở rộng vùng nhớ cho process
+
+#### `print_pgtbl(caller, start, end)` — In bảng trang (debug)
+
+- **Mục đích**: In địa chỉ bảng trang ở mỗi cấp để kiểm tra memory isolation
+- **Format**: `PID : <pid>` + `PDG=<addr> P4g=<addr> PUD=<addr> PMD=<addr>`
+- **Lưu ý**: Do multi-CPU chạy song song, log từ nhiều CPU có thể xen kẽ. PID giúp phân biệt output của process nào
+
+### 3.4 `mm-vm.c` — Virtual Memory Management
+
+Quản lý vùng nhớ ảo (VMA). Hình dung VMA như một "khoảng đất" trong không gian địa chỉ ảo — process xin thêm đất khi cần alloc memory.
+
+**`int inc_vma_limit(struct pcb_t *caller, int vmaid, addr_t inc_sz)`**
+- **Mục đích**: Mở rộng vùng nhớ ảo khi process cần thêm bộ nhớ (giống `sbrk()` trong Linux)
+- **Khi nào gọi**: Khi `__alloc()` không tìm được vùng trống trong free region list
+- **Logic**:
+  1. Tính `inc_amt` = align `inc_sz` lên bội số page size (4KB)
+  2. Tính `incnumpage` = số page cần thêm
+  3. `get_vm_area_node_at_brk()` → tạo region mới tại break pointer hiện tại
+  4. Lưu `old_end = cur_vma->sbrk` (vị trí bắt đầu vùng mới)
+  5. Cập nhật `cur_vma->vm_end += inc_sz` và `cur_vma->sbrk += inc_sz` (mở rộng VMA)
+  6. `vm_map_ram()` → cấp phát frame vật lý thật + ghi vào page table
+
+**`struct vm_rg_struct *get_vm_area_node_at_brk(caller, vmaid, size, alignedsz)`**
+- **Mục đích**: Tạo một region node mới tại vị trí break pointer hiện tại
+- **Logic**: `rg_start = cur_vma->sbrk` (vị trí hiện tại), `rg_end = sbrk + size`
+- **Ví dụ**: Nếu sbrk = 8192, size = 4096 → region [8192, 12288)
+
+**`int validate_overlap_vm_area(caller, vmaid, vmastart, vmaend)`**
+- **Mục đích**: Kiểm tra vùng nhớ mới có **chồng lấn** với VMA đã có không
+- **Logic**: Duyệt tất cả VMA, dùng macro `OVERLAP()` kiểm tra. Return -1 nếu overlap
+
+### 3.5 `libmem.c` — Memory Library (Giao Diện CPU ↔ Memory)
+
+Cung cấp các hàm CPU gọi khi thực thi instruction ALLOC/FREE/READ/WRITE.
+
+#### Luồng ALLOC
+
+```mermaid
+sequenceDiagram
+    participant CPU
+    participant libmem
+    participant mm-vm
+    participant mm64
+    participant memphy
+
+    CPU->>libmem: liballoc(proc, size, reg_index)
+    libmem->>libmem: get_free_vmrg_area() — tìm vùng trống
+    alt Có vùng trống
+        libmem-->>CPU: return addr (từ free region)
+    else Không có
+        libmem->>mm-vm: syscall 17 → inc_vma_limit()
+        mm-vm->>mm64: vm_map_ram() → alloc_pages_range()
+        mm64->>memphy: MEMPHY_get_freefp()
+        mm64->>mm64: pte_set_fpn() qua pg_walk()
+        mm-vm-->>libmem: OK
+        libmem-->>CPU: return old_sbrk
+    end
+```
+
+**`int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)`**
+- **Mục đích**: Đảm bảo page `pgn` **có mặt trong RAM**. Nếu page đang nằm trên swap disk → đưa nó về RAM
+- **Trường hợp 1** — Page đã ở RAM (PRESENT=1, SWAPPED=0): Đơn giản lấy FPN từ PTE, xong
+- **Trường hợp 2** — Page ở swap (cần swap-in): Đây là trường hợp phức tạp:
+  1. `find_victim_page(mm)` → chọn page cũ nhất (theo FIFO) để đuổi khỏi RAM
+  2. `MEMPHY_get_freefp(active_mswp)` → tìm frame trống trên swap disk
+  3. Copy nội dung victim frame từ RAM → swap disk (victim bị đuổi)
+  4. Copy nội dung target page từ swap disk → victim's frame trong RAM (target được đưa về)
+  5. `pte_set_swap(victim_pgn)` → cập nhật PTE victim: "bây giờ tôi ở swap"
+  6. `pte_set_fpn(target_pgn)` → cập nhật PTE target: "bây giờ tôi ở RAM"
+  7. Thêm target vào FIFO list (để sau này bị đuổi nếu cần)
+
+**`int pg_getval(struct mm_struct *mm, int addr, BYTE *data, struct pcb_t *caller)`**
+- **Mục đích**: Đọc 1 byte từ địa chỉ ảo `addr`
+- **Logic**:
+  1. Tách `addr` → page number (PGN) + offset trong page
+  2. `pg_getpage()` → đảm bảo page ở RAM, lấy được FPN
+  3. `phyaddr = FPN * PAGE_SIZE + offset` → tính địa chỉ vật lý thật
+  4. `MEMPHY_read(mram, phyaddr, data)` → đọc byte từ RAM vật lý
+
+**`int pg_setval(struct mm_struct *mm, int addr, BYTE value, struct pcb_t *caller)`**
+- **Mục đích**: Ghi 1 byte vào địa chỉ ảo `addr` — logic tương tự pg_getval nhưng dùng `MEMPHY_write`
+
+**`int find_victim_page(struct mm_struct *mm, addr_t *retpgn)`**
+- **Mục đích**: Chọn page để đuổi khỏi RAM khi RAM đầy (thuật toán **FIFO**)
+- **Logic**: Duyệt linked list `mm->fifo_pgn` đến **phần tử cuối cùng** (oldest). Xóa nó và trả page number
+- **Tại sao lấy cuối**: `enlist_pgn_node()` luôn thêm page mới vào **đầu** list → phần tử cuối = page **cũ nhất** → đúng FIFO (First In, First Out)
+
+**`int get_free_vmrg_area(struct pcb_t *caller, int vmaid, int size, struct vm_rg_struct *newrg)`**
+- **Mục đích**: Tìm vùng nhớ trống đủ lớn cho yêu cầu alloc
+- **Logic**: Duyệt `vm_freerg_list`, tìm region có kích thước `>= size`
+  - Nếu region vừa đúng → dùng hết
+  - Nếu region lớn hơn → cắt phần cần, giữ phần dư lại trong free list
+- **Return -1**: Nếu không tìm được vùng trống → caller phải gọi `inc_vma_limit()` để mở rộng VMA
+
+### 3.6 `sys_mem.c` — System Call Handler
+
+#### `__sys_memmap(krnl, pid, regs)`
+
+Kernel handler cho syscall 17. Tìm đúng process caller bằng cách duyệt `running_list` match PID.
+
+| Operation | Hàm gọi | Mô tả |
+|:---|:---|:---|
+| `SYSMEM_MAP_OP` | `vmap_pgd_memset()` | Map page table |
+| `SYSMEM_INC_OP` | `inc_vma_limit()` | Tăng giới hạn VMA |
+| `SYSMEM_SWP_OP` | `__mm_swap_page()` | Swap RAM ↔ Disk |
+| `SYSMEM_IO_READ` | `MEMPHY_read()` | Đọc physical memory |
+| `SYSMEM_IO_WRITE` | `MEMPHY_write()` | Ghi physical memory |
+
+### 3.7 `os.c` — Kernel Chính
+
+#### `ld_routine()` — Loader
+
+1. Init kernel page tables (`krnl_pgd/p4d/pud/pmd/pt`)
+2. Với mỗi process:
+   - `load(path)` → parse file, tạo PCB
+   - `malloc(sizeof(struct krnl_t))`, `*krnl = os` → shallow copy kernel
+   - `krnl->mm = malloc(...)`, `init_mm(krnl->mm, proc)` → mm riêng
+   - `krnl->mram = mram; krnl->mswp = mswp` → gán physical memory
+   - `add_proc(proc)` → đưa vào MLQ
+
+#### `cpu_routine()` — CPU Thread
+
+1. `get_proc()` → lấy process từ MLQ (priority cao nhất)
+2. `run(proc)` → thực thi 1 instruction
+3. Hết time slot → `put_proc()` trả lại MLQ
+4. Process xong (`pc == code->size`) → `free(proc)`, lấy process mới
+5. Không còn process + `done == 1` → CPU dừng
+
+### 3.8 `mm-memphy.c` — Physical Memory
+
+- `init_memphy(mp, maxsz, rdmflag)` — Khởi tạo vùng nhớ vật lý
+- `MEMPHY_read/write(mp, addr, data)` — Đọc/ghi byte
+- `MEMPHY_get_freefp(mp, fpn)` — Lấy frame trống
+- `MEMPHY_put_freefp(mp, fpn)` — Trả frame về free list
+- `MEMPHY_dump(mp)` — In nội dung memory (debug)
+
+---
+
+## 4. Luồng Thực Thi Hoàn Chỉnh
+
+### Khởi động
+
+```
+main() → read_config()
+       → init_memphy(&mram) + mswp[]
+       → init_scheduler()
+       → pthread_create(ld_routine)    // Loader thread
+       → pthread_create(cpu_routine)   // N CPU threads
+```
+
+### Vòng đời Process
+
+```
+load(path) → malloc(krnl_t) + *krnl = os → init_mm(krnl->mm)
+           → add_proc() → MLQ ready queue
+           → get_proc() → CPU dispatch
+           → run() × time_slot lần
+           → put_proc() → MLQ (round-robin)
+           → ... lặp lại ...
+           → pc == code->size → free(proc)
+```
+
+### Memory Operation Flow
+
+```
+ALLOC → liballoc → __alloc → get_free_vmrg_area
+                           → [miss] → syscall 17 → inc_vma_limit
+                                                  → vm_map_ram
+                                                  → alloc_pages_range + vmap_page_range
+
+READ  → libread → __read → pg_getval → pg_getpage → [swap-in nếu cần]
+                                      → MEMPHY_read
+
+WRITE → libwrite → __write → pg_setval → pg_getpage → [swap-in nếu cần]
+                                        → MEMPHY_write
+
+FREE  → libfree → __free → enlist_vm_freerg_list
 ```
 
 ---
 
-## 3. Hoạt Động Của Các Module Chính
+## 5. So Sánh Với Code Gốc
 
-### 3.1 Quản Lý Hàng Đợi (`queue.c`)
-- **`enqueue`**: Đưa một phần tử vào cuối mảng `q->proc[q->size]` và tăng `size`.
-- **`dequeue`**: Trả về phần tử đầu tiên (`q->proc[0]`), sau đó dùng vòng lặp `for` dịch toàn bộ mảng sang trái một đơn vị.
-- **`purgequeue`**: Tìm một `pcb_t` cụ thể bằng vòng lặp, xóa nó đi, sau đó dịch các phần tử phía sau để lấp đầy chỗ trống.
+### 5.1 Bug trong code gốc `os.c`
 
-### 3.2 Lập Lịch Tiến Trình MLQ (`sched.c`)
-Mô phỏng bộ lập lịch gồm nhiều hàng đợi dựa trên độ ưu tiên (Priority từ 0 đến MAX_PRIO). Mức 0 là cao nhất.
-- **`get_mlq_proc`**: Lấy tiến trình ưu tiên nhất. Hàm sử dụng vòng lặp từ `prio = 0` đến `MAX_PRIO`. Hàng đợi nào có người (`!empty`) thì lấy ra đầu tiên. Phải dùng `pthread_mutex_lock(&queue_lock)` để ngăn chặn race condition giữa nhiều CPU (ví dụ CPU 1 và CPU 2 cùng muốn rút 1 process).
-- **`put_mlq_proc`**: Khi tiến trình hết lượt chạy (hết quantum), OS lấy nó ra khỏi `running_list` (bằng `purgequeue`) và đưa nó trả về `mlq_ready_queue` bằng `enqueue`.
+```c
+// GỐC (BUG) — line 140
+struct krnl_t * krnl = proc->krnl = &os;  // TẤT CẢ process trỏ đến cùng 1 &os
+krnl->mm = malloc(sizeof(struct mm_struct));  // GHI ĐÈ mm mỗi lần load
+```
 
-### 3.3 Trái Tim Phân Trang (`mm64.c` & `mm-vm.c`)
+**Vấn đề**: Khi load process 2, `os.mm` bị overwrite → process 1 mất page table.
 
-#### Cơ chế 5-Level Page Walk (`pgd_walk`)
-Thay vì khai báo 1 mảng tĩnh `uint32_t pgd[PAGING64_MAX_PGN]` gây tràn bộ nhớ với hệ điều hành 64-bit, hệ thống chỉ giữ một mảng Root PGD. Hàm `pgd_walk(pgd_root, pgn, alloc)` làm nhiệm vụ xuyên qua 5 tầng:
-1. Tính 5 chỉ số (index) bằng các bitmask: `pgd_i`, `p4d_i`, `pud_i`, `pmd_i`, `pt_i`.
-2. Truy xuất `pgd_root[pgd_i]`. Nếu ô này bằng 0 (NULL) nghĩa là bảng con `P4D` chưa tồn tại.
-3. Nếu cờ `alloc` là 1, dùng `calloc` để cấp phát nguyên một bảng P4D mới toanh và trỏ `pgd_root[pgd_i]` tới mảng đó. Nếu `alloc` là 0, trả về NULL (tiến trình chưa từng xài địa chỉ này).
-4. Cứ thế đi qua các tầng cho tới khi đến được bảng cuối (PT) và lấy địa chỉ của ô nhớ PTE cụ thể `&pt[pt_i]`.
+```c
+// ĐÃ SỬA — mỗi process nhận bản copy riêng
+struct krnl_t * krnl = malloc(sizeof(struct krnl_t));
+*krnl = os;           // Shallow copy → mram, mswp, queues tự động shared (pointer copy)
+proc->krnl = krnl;
+krnl->mm = malloc(sizeof(struct mm_struct));  // mm riêng cho process
+init_mm(krnl->mm, proc);
+krnl->mram = mram;    // Gán physical memory
+krnl->mswp = mswp;
+krnl->active_mswp = active_mswp;
+```
 
-#### Xin Vùng Nhớ (`inc_vma_limit` trong `mm-vm.c`)
-Khi mã gọi lệnh `ALLOC size`:
-1. Vùng nhớ xin cấp luôn phải **căn lề (align)**. Không thể cấp phát nửa trang. Hàm `inc_vma_limit` tính số trang `incnumpage = ceil(size / PAGESZ)` và nhân ngược lại để ra kích thước đã làm tròn `inc_amt`.
-2. Mở rộng `vma->vm_end` thêm `inc_amt` và `sbrk` thêm kích thước ban đầu.
-3. Chuyển xuống hàm ánh xạ `vm_map_range` ở `mm64.c`.
+### 5.2 Bug trong code gốc `sys_mem.c`
 
-#### Ánh Xạ Vật Lý (`vm_map_range` -> `alloc_pages_range` -> `vmap_page_range`)
-- OS duyệt qua số trang cần xin, mỗi trang xin RAM một Frame cứng bằng `MEMPHY_get_freefp()`.
-- Lấy được FPN, nó gọi hàm `pte_set_fpn` (hàm này sử dụng `pgd_walk` bên trên) để đánh dấu PGN trỏ về FPN. Đồng thời, thêm trang đó vào hàng đợi FIFO `fifo_pgn` để dành cho việc đổi trang (swap).
+```c
+// GỐC (BUG) — tạo dummy process, không liên kết với process thực
+struct pcb_t *caller = malloc(sizeof(struct pcb_t));
+caller->krnl = malloc(sizeof(struct krnl_t));
+```
 
-### 3.4 Thay Thế Trang và Swap Disk (`libmem.c`)
-Xảy ra khi ta muốn đọc/ghi vùng nhớ ảo (`pg_getval`, `pg_setval`) hoặc khi cấp phát bộ nhớ RAM nhưng RAM đầy.
+```c
+// ĐÃ SỬA — duyệt running_list tìm đúng process caller
+struct pcb_t *caller = NULL;
+struct pcb_t *tmp = NULL;
+int i;
+for (i = 0; i < krnl->running_list->size; i++) {
+    tmp = krnl->running_list->proc[i];
+    if (tmp->pid == pid) {
+        caller = tmp;
+        break;
+    }
+}
+```
 
-Khi `pg_getpage` nhận thấy một trang **không nằm trên RAM** (PRESENT == 0 nhưng SWAPPED == 1):
-1. **Tìm Nạn Nhân**: Tìm một trang cũ trong `caller->krnl->mm->fifo_pgn`. Đuổi nó đi (Ví dụ nạn nhân có `vicpgn`, đang ở frame `vicfpn`).
-2. **Kiếm Swap Trống**: Tìm vị trí trống trong ổ đĩa SWAP.
-3. **Cóp Nạn Nhân Vào Đĩa**: Dùng `__swap_cp_page()` để di chuyển toàn bộ dữ liệu từ `mram[vicfpn]` sang `mswp[swpfpn]`. Sửa PTE của nạn nhân bằng `pte_set_swap()`.
-4. **Cóp Mục Tiêu Từ Đĩa Lên RAM**: Kéo trang ta đang cần từ Swap Disk đắp lên cái frame `vicfpn` vừa bị trống.
-5. Cập nhật PTE cho trang vừa lên (`pte_set_fpn`). Đưa trang này vào cuối danh sách FIFO.
+### 5.3 Tổng hợp các file đã thay đổi so với gốc
 
-### 3.5 System Call & Không Gian Kernel (`sys_mem.c` & `libmem.c`)
-- Lệnh từ file đi vào qua `__sys_memmap(krnl, pid, regs)`. Đây là rào chắn an ninh.
-- OS phải duyệt danh sách `krnl->running_list` để đối chiếu xem `pid` này thuộc về `pcb_t` nào (process caller) để cấp phát chuẩn. Tuyệt đối không xài con trỏ truyền vào tùy ý.
-- **Copy_To/From_User**: Vì con trỏ nằm ở Kernel nhưng dữ liệu ở User Space (bảng trang hoàn toàn khác nhau), hệ thống phải đọc vùng User bằng API `pg_getval` và chép cẩn thận vào vùng Kernel bằng các API Memory (`MEMPHY_write`).
-
----
-
-## 4. Tổng Kết Luồng Đời Của Một Yêu Cầu
-
-1. Chương trình thực thi tới lệnh: `alloc 4096`
-2. CPU chuyển quyền điều khiển vào **Syscall** -> `sys_memmap` (memop = `SYSMEM_INC_OP`)
-3. Syscall gọi `inc_vma_limit`. HĐH nhận ra cần cấp thêm 4096 byte = 1 trang bộ nhớ. Cập nhật `vma->vm_end`.
-4. Gọi `alloc_pages_range`: Xin `mram` một khung trang trống, ví dụ khung trang `Frame 5`.
-5. Gọi `vmap_page_range`: Duyệt qua 5-Level Table bằng `pgd_walk`. Vì đây là địa chỉ mới, OS tự động gọi `calloc()` để xây bảng trang trên đường đi. Tới trang cuối, ghi đè PTE = `Frame 5` (Present = 1).
-6. Hoàn tất việc cấp phát. Thanh ghi ảo sẽ lưu lại địa chỉ của vùng nhớ ảo mới này. 
-
-Tất cả diễn ra hoàn toàn vô hình với ứng dụng user! Đây chính là cái bóng của Hệ Điều Hành.
+| File | Gốc | Hiện tại |
+|:---|:---|:---|
+| `os.c` | `proc->krnl = &os` (bug) | `malloc + *krnl = os` (mm riêng mỗi process) |
+| `sys_mem.c` | Tạo dummy `malloc(pcb_t)` | Duyệt `running_list` match PID |
+| `mm64.c` | Các hàm PTE dùng dummy `malloc` PTE, TODO trống | Implement `pg_walk()`, PTE functions dùng bảng trang thật, `init_mm`, `alloc_pages_range`, `vmap_page_range`, `print_pgtbl` |
+| `mm-vm.c` | `inc_vma_limit` trống (return 0) | Implement đầy đủ: tính inc_amt, get_vm_area_node_at_brk, update sbrk, vm_map_ram |
+| `libmem.c` | `pg_getval/pg_setval` trống, `pg_getpage` swap chưa implement | Implement đọc/ghi qua page table, swap logic đầy đủ |
+| `queue.c` | Trống | Implement `enqueue`, `dequeue`, `purgequeue` |
+| `sched.c` | `get_mlq_proc` trống | Implement với mutex + running_list tracking |
+| `mm-memphy.c` | `MEMPHY_dump` trống | Implement in memory content |
