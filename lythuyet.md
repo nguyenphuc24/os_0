@@ -580,7 +580,7 @@ addr_t vm_map_kernel(struct pcb_t *caller,
   struct krnl_t *krnl = caller->krnl;
 
   /* 2. kernel base address*/
-  const addr_t KERNEL_BASE = /*CHỌN ĐỊA CHỈ */;
+  const addr_t KERNEL_BASE = 0xfe00000000000000ULL;
 
   /* 3. tính địa chỉ kernel virtual bắt đầu */
   ret_rg->rg_start = KERNEL_BASE + ((addr_t)fpit->fpn * PAGING64_PAGESZ);
@@ -682,7 +682,7 @@ int __write_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset,
   MEMPHY_write(caller->krnl->mram, phyaddr, value);
   return 0;
 }
-chúng ta đang cho const addr_t KERNEL_BASE = 0xffff800000000000ULL;
+
                     VIRTUAL MEMORY SPACE (64-bit)
 
 0xFFFFFFFFFFFFFFFF  ┌──────────────────────────────────────┐
@@ -697,7 +697,7 @@ chúng ta đang cho const addr_t KERNEL_BASE = 0xffff800000000000ULL;
                     │  kernel code / heap / cache          │
                     │  krnl_pgd / driver / kmem            │
                     │                                      │
-0xFFFF800000000000  ├──────────── KERNEL_BASE ─────────────┤
+0xFE00000000000000  ├──────────── KERNEL_BASE ─────────────┤
                     │                                      │
                     │              User Space              │
                     │                                      │
