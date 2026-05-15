@@ -1,0 +1,213 @@
+Time slot   0
+ld_routine
+	Loaded a process at input/proc/p1s, PID: 1 PRIO: 15
+	CPU 3: Dispatched process  1
+Time slot   1
+Time slot   2
+	CPU 3: Put process  1 to run queue
+	CPU 3: Dispatched process  1
+Time slot   3
+Time slot   4
+	Loaded a process at input/proc/m0s, PID: 2 PRIO: 120
+	CPU 3: Put process  1 to run queue
+	CPU 3: Dispatched process  1
+	CPU 1: Dispatched process  2
+Time slot   5
+liballoc:218
+print_pgtbl:
+PID : 2
+ PDG=7f89200087b0 P4g=7f891c000c00 PUD=7f891c001c10 PMD=7f891c002c20
+Time slot   6
+liballoc:218
+print_pgtbl:
+PID : 2
+ PDG=7f89200087b0 P4g=7f891c000c00 PUD=7f891c001c10 PMD=7f891c002c20
+Time slot   7
+	CPU 3: Put process  1 to run queue
+	CPU 3: Dispatched process  1
+	Loaded a process at input/proc/p0s, PID: 3 PRIO: 130
+	CPU 1: Put process  2 to run queue
+	CPU 1: Dispatched process  2
+libfree:241
+print_pgtbl:
+PID : 2
+ PDG=7f89200087b0 P4g=7f891c000c00 PUD=7f891c001c10 PMD=7f891c002c20
+	CPU 2: Dispatched process  3
+Time slot   8
+liballoc:218
+print_pgtbl:
+PID : 3
+ PDG=7f892000a680 P4g=7f8914000c00 PUD=7f8914001c10 PMD=7f8914002c20
+liballoc:218
+print_pgtbl:
+PID : 2
+ PDG=7f89200087b0 P4g=7f891c000c00 PUD=7f891c001c10 PMD=7f891c002c20
+	Loaded a process at input/proc/s0, PID: 4 PRIO: 38
+	CPU 2: Put process  3 to run queue
+	CPU 2: Dispatched process  4
+Time slot   9
+	CPU 0: Dispatched process  3
+liballoc:218
+print_pgtbl:
+PID : 3
+ PDG=7f892000a680 P4g=7f8914000c00 PUD=7f8914001c10 PMD=7f8914002c20
+	CPU 3: Put process  1 to run queue
+	CPU 3: Dispatched process  1
+	CPU 1: Put process  2 to run queue
+	CPU 1: Dispatched process  2
+libwrite:459
+print_pgtbl:
+PID : 2
+ PDG=7f89200087b0 P4g=7f891c000c00 PUD=7f891c001c10 PMD=7f891c002c20
+Time slot  10
+libfree:241
+print_pgtbl:
+PID : 3
+ PDG=7f892000a680 P4g=7f8914000c00 PUD=7f8914001c10 PMD=7f8914002c20
+libwrite:459
+print_pgtbl:
+PID : 2
+ PDG=7f89200087b0 P4g=7f891c000c00 PUD=7f891c001c10 PMD=7f891c002c20
+	Loaded a process at input/proc/s3, PID: 5 PRIO: 39
+Time slot  11
+	CPU 3: Processed  1 has finished
+	CPU 0: Put process  3 to run queue
+	CPU 0: Dispatched process  5
+	CPU 2: Put process  4 to run queue
+	CPU 2: Dispatched process  4
+	CPU 1: Processed  2 has finished
+	CPU 3: Dispatched process  3
+liballoc:218
+print_pgtbl:
+PID : 3
+ PDG=7f892000a680 P4g=7f8914000c00 PUD=7f8914001c10 PMD=7f8914002c20
+libwrite:459
+print_pgtbl:
+PID : 3
+ PDG=7f892000a680 P4g=7f8914000c00 PUD=7f8914001c10 PMD=7f8914002c20
+Time slot  12
+	CPU 3: Put process  3 to run queue
+	CPU 3: Dispatched process  3
+libread:406
+print_pgtbl:
+PID : 3
+ PDG=7f892000a680 P4g=7f8914000c00 PUD=7f8914001c10 PMD=7f8914002c20
+	CPU 2: Put process  4 to run queue
+	CPU 2: Dispatched process  4
+Time slot  13
+	CPU 0: Put process  5 to run queue
+	CPU 0: Dispatched process  5
+	Loaded a process at input/proc/m1s, PID: 6 PRIO: 15
+Time slot  14
+	CPU 1: Dispatched process  6
+liballoc:218
+print_pgtbl:
+PID : 6
+ PDG=7f8920010150 P4g=7f891c004cf0 PUD=7f891c005d00 PMD=7f891c006d10
+Time slot  15
+liballoc:218
+print_pgtbl:
+PID : 6
+ PDG=7f8920010150 P4g=7f891c004cf0 PUD=7f891c005d00 PMD=7f891c006d10
+	CPU 2: Put process  4 to run queue
+	CPU 2: Dispatched process  4
+	CPU 0: Put process  5 to run queue
+	CPU 0: Dispatched process  5
+	CPU 3: Put process  3 to run queue
+	CPU 3: Dispatched process  3
+libread:406
+print_pgtbl:
+PID : 3
+ PDG=7f892000a680 P4g=7f8914000c00 PUD=7f8914001c10 PMD=7f8914002c20
+	Loaded a process at input/proc/s2, PID: 7 PRIO: 120
+Time slot  16
+	CPU 1: Put process  6 to run queue
+	CPU 1: Dispatched process  6
+libfree:241
+print_pgtbl:
+PID : 6
+ PDG=7f8920010150 P4g=7f891c004cf0 PUD=7f891c005d00 PMD=7f891c006d10
+	CPU 3: Put process  3 to run queue
+	CPU 3: Dispatched process  7
+	CPU 2: Put process  4 to run queue
+	CPU 2: Dispatched process  4
+Time slot  17
+liballoc:218
+print_pgtbl:
+PID : 6
+ PDG=7f8920010150 P4g=7f891c004cf0 PUD=7f891c005d00 PMD=7f891c006d10
+	CPU 0: Put process  5 to run queue
+	CPU 0: Dispatched process  5
+	Loaded a process at input/proc/s1, PID: 8 PRIO: 0
+	CPU 1: Put process  6 to run queue
+Time slot  18
+	CPU 1: Dispatched process  8
+	CPU 3: Put process  7 to run queue
+	CPU 3: Dispatched process  6
+libfree:241
+print_pgtbl:
+PID : 6
+ PDG=7f8920010150 P4g=7f891c004cf0 PUD=7f891c005d00 PMD=7f891c006d10
+	CPU 2: Put process  4 to run queue
+	CPU 2: Dispatched process  4
+Time slot  19
+	CPU 0: Put process  5 to run queue
+	CPU 0: Dispatched process  5
+libfree:241
+print_pgtbl:
+PID : 6
+ PDG=7f8920010150 P4g=7f891c004cf0 PUD=7f891c005d00 PMD=7f891c006d10
+	CPU 1: Put process  8 to run queue
+	CPU 1: Dispatched process  8
+Time slot  20
+	CPU 3: Processed  6 has finished
+	CPU 3: Dispatched process  7
+	CPU 2: Put process  4 to run queue
+	CPU 2: Dispatched process  4
+Time slot  21
+	CPU 0: Put process  5 to run queue
+	CPU 0: Dispatched process  5
+Time slot  22
+	CPU 0: Processed  5 has finished
+	CPU 0: Dispatched process  3
+libread:406
+print_pgtbl:
+PID : 3
+ PDG=7f892000a680 P4g=7f8914000c00 PUD=7f8914001c10 PMD=7f8914002c20
+	CPU 1: Put process  8 to run queue
+	CPU 1: Dispatched process  8
+	CPU 3: Put process  7 to run queue
+	CPU 3: Dispatched process  7
+	CPU 2: Put process  4 to run queue
+	CPU 2: Dispatched process  4
+Time slot  23
+	CPU 1: Put process  8 to run queue
+	CPU 1: Dispatched process  8
+Time slot  24
+	CPU 2: Processed  4 has finished
+	CPU 2 stopped
+	CPU 0: Put process  3 to run queue
+	CPU 0: Dispatched process  3
+libfree:241
+print_pgtbl:
+PID : 3
+ PDG=7f892000a680 P4g=7f8914000c00 PUD=7f8914001c10 PMD=7f8914002c20
+	CPU 3: Put process  7 to run queue
+	CPU 3: Dispatched process  7
+Time slot  25
+	CPU 1: Processed  8 has finished
+	CPU 1 stopped
+Time slot  26
+	CPU 0: Processed  3 has finished
+	CPU 0 stopped
+Time slot  27
+	CPU 3: Put process  7 to run queue
+	CPU 3: Dispatched process  7
+Time slot  28
+Time slot  29
+	CPU 3: Put process  7 to run queue
+	CPU 3: Dispatched process  7
+Time slot  30
+Time slot  31
+	CPU 3: Processed  7 has finished
+	CPU 3 stopped

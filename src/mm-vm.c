@@ -149,13 +149,21 @@ int inc_vma_limit(struct pcb_t *caller, int vmaid, addr_t inc_sz)
   struct vm_rg_struct *area = get_vm_area_node_at_brk(caller, vmaid, inc_sz, inc_amt);
   addr_t old_end = cur_vma->sbrk;
 
-  /* TODO Validate overlap of obtained region */
-  //if (validate_overlap_vm_area(caller, vmaid, area->rg_start, area->rg_end) < 0)
-  //  return -1; /*Overlap and failed allocation */
+  if (validate_overlap_vm_area(caller, vmaid, area->rg_start, area->rg_end) < 0)
+    return -1;
 
-  /* TODO: Obtain the new vm area based on vmaid */
-  cur_vma->vm_end += inc_sz;
-  cur_vma->sbrk += inc_sz;
+  cur_vma->vm_end += inc_amt;
+  cur_vma->sbrk += inc_amt;
+
+  if (inc_amt > inc_sz)
+  {
+    struct vm_rg_struct *freerg = malloc(sizeof(struct vm_rg_struct));
+    freerg->rg_start = old_end + inc_sz;
+    freerg->rg_end = old_end + inc_amt;
+    freerg->mode_bit = 1;
+    freerg->rg_next = NULL;
+    enlist_vm_freerg_list(caller->krnl->mm, freerg);
+  }
 
   /* The obtained vm area (only)
    * now will be alloc real ram region */

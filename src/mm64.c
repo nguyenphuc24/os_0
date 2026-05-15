@@ -360,7 +360,6 @@ addr_t alloc_pages_range(struct pcb_t *caller, int req_pgnum, struct framephy_st
       addr_t victim_fpn;
       uint32_t victim_pte;
       addr_t swp_off;
-      int swptyp;
 
       if (find_victim_page(caller->krnl->mm, &victim_pgn) != 0)
       {
@@ -381,9 +380,6 @@ addr_t alloc_pages_range(struct pcb_t *caller, int req_pgnum, struct framephy_st
       regs.a2 = victim_fpn;
       regs.a3 = swp_off;
       _syscall(caller->krnl, caller->pid, 17, &regs);
-
-      __swap_cp_page(caller->krnl->mram, victim_fpn, 
-                     caller->krnl->active_mswp, swp_off);
 
       pte_set_swap(caller, victim_pgn, 0, swp_off);
 
