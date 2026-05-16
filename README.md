@@ -612,6 +612,8 @@ Kernel handler cho syscall 17. Tìm đúng process caller bằng cách duyệt `
 | `SYSMEM_IO_READ` | `MEMPHY_read()` | Đọc physical memory |
 | `SYSMEM_IO_WRITE` | `MEMPHY_write()` | Ghi physical memory |
 
+> **[TODO — Planned]** Hiện tại `pg_getval` và `pg_setval` trong `libmem.c` gọi trực tiếp `MEMPHY_read`/`MEMPHY_write` thay vì đi qua `_syscall(..., SYSMEM_IO_READ/WRITE)`. Tính năng **I/O thông qua syscall** cho read/write sẽ được hoàn thiện sau — cần giải quyết race condition khi lookup `caller` trong `running_list` từ syscall handler context.
+
 ### 3.7 `os.c` — Kernel Chính
 
 #### `ld_routine()` — Loader
@@ -756,3 +758,38 @@ for (i = 0; i < krnl->running_list->size; i++) {
 | `queue.c` | Trống | Implement `enqueue`, `dequeue`, `purgequeue` |
 | `sched.c` | `get_mlq_proc` trống | Implement với mutex + running_list tracking |
 | `mm-memphy.c` | `MEMPHY_dump` trống | Implement in memory content |
+
+---
+
+## 6. Tính Năng Đang lỗi 
+
+### 6.1 Syscall cho SYSMEM_IO_READ / SYSMEM_IO_WRITE
+
+Hiện tại, `pg_getval` và `pg_setval` trong `libmem.c` gọi **trực tiếp** `MEMPHY_read`/`MEMPHY_write` thay vì đi qua syscall mechanism:
+
+```c
+/* Template thầy yêu cầu (chưa hoàn thiện): */
+int pg_setval(struct mm_struct *mm, int addr, BYTE value, struct pcb_t *caller)
+{
+  /* ... pg_getpage ... */
+
+  /* TODO
+   *  MEMPHY_write(caller->krnl->mram, phyaddr, value);
+   *  MEMPHY WRITE with SYSMEM_IO_WRITE
+   * SYSCALL 17 sys_memmap
+   */
+
+  return 0;
+}
+```
+
+Mục tiêu là đổi thành:
+```c
+struct sc_regs regs;
+regs.a1 = SYSMEM_IO_WRITE;
+regs.a2 = phyaddr;
+regs.a3 = value;
+_syscall(caller->krnl, caller->pid, 17, &regs);
+```
+
+**Lý do chưa làm:** `__sys_memmap` tìm lại `caller` bằng cách duyệt `running_list` theo `pid`, nhưng không có lock bảo vệ trong khi các thread khác có thể đang modify `running_list` — gây **race condition** và crash. Cần giải quyết đồng bộ hóa này trước.

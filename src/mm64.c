@@ -101,12 +101,6 @@ int get_pd_from_pagenum(addr_t pgn, addr_t* pgd, addr_t* p4d, addr_t* pud, addr_
                          pgd,p4d,pud,pmd,pt);
 }
 
-/*
- * pg_walk - Walk the 5-level page table and return pointer to PTE.
- *           If alloc is true, allocate missing sub-tables on demand.
- *           mm->p4d, mm->pud, mm->pmd, mm->pt are updated to track
- *           the dynamically allocated sub-tables along the walk path.
- */
 static addr_t* pg_walk(struct mm_struct *mm, addr_t pgn, int alloc)
 {
   addr_t pgd_idx, p4d_idx, pud_idx, pmd_idx, pt_idx;
